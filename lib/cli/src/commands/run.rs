@@ -198,8 +198,6 @@ impl Run {
 
         // Do we want to invoke a function?
         if let Some(ref invoke) = self.invoke {
-            let imports = imports! {};
-            let instance = Instance::new(&module, &imports)?;
             let result = self.invoke_function(&instance, invoke, &self.args)?;
             println!(
                 "{}",
