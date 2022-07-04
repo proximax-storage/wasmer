@@ -9,6 +9,7 @@ Looking for changes that affect our C API? See the [C API Changelog](lib/c-api/C
 ## **Unreleased**
 
 ### Changed
+- [#2997](https://github.com/wasmerio/wasmer/pull/2997) Fix "run --invoke [function]" to behave the same as "run"
 - [#2946](https://github.com/wasmerio/wasmer/pull/2946) Remove dylib,staticlib engines in favor of a single Universal engine
 - [#2949](https://github.com/wasmerio/wasmer/pull/2949) Switch back to using custom LLVM builds on CI
 
