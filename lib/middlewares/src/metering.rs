@@ -82,7 +82,7 @@ impl fmt::Debug for MeteringGlobalIndexes {
 ///     compiler_config.push_middleware(metering);
 /// }
 /// ```
-pub struct Metering<F: Fn(&Operator) -> u64 + Send + Sync> {
+pub struct Metering<F: Fn(&Operator) -> (u8, u64) + Send + Sync> {
     /// Initial limit of points.
     initial_limit: u64,
 
@@ -91,10 +91,12 @@ pub struct Metering<F: Fn(&Operator) -> u64 + Send + Sync> {
 
     /// The global indexes for metering points.
     global_indexes: Mutex<Option<MeteringGlobalIndexes>>,
+
+    poex_global_index: Mutex<Option<GlobalIndex>>,
 }
 
 /// The function-level metering middleware.
-pub struct FunctionMetering<F: Fn(&Operator) -> u64 + Send + Sync> {
+pub struct FunctionMetering<F: Fn(&Operator) -> (u8, u64) + Send + Sync> {
     /// Function that maps each operator to a cost in "points".
     cost_function: Arc<F>,
 
@@ -103,6 +105,14 @@ pub struct FunctionMetering<F: Fn(&Operator) -> u64 + Send + Sync> {
 
     /// Accumulated cost of the current basic block.
     accumulated_cost: u64,
+
+    /// To concatenate opcodes
+    data: u64,
+
+    /// To count the opcodes concatenated
+    opcode_counts: u8,
+
+    poex_global_index: GlobalIndex,
 }
 
 /// Represents the type of the metering points, either `Remaining` or
@@ -124,18 +134,19 @@ pub enum MeteringPoints {
     Exhausted,
 }
 
-impl<F: Fn(&Operator) -> u64 + Send + Sync> Metering<F> {
+impl<F: Fn(&Operator) -> (u8, u64) + Send + Sync> Metering<F> {
     /// Creates a `Metering` middleware.
     pub fn new(initial_limit: u64, cost_function: F) -> Self {
         Self {
             initial_limit,
             cost_function: Arc::new(cost_function),
             global_indexes: Mutex::new(None),
+            poex_global_index: Mutex::new(None),
         }
     }
 }
 
-impl<F: Fn(&Operator) -> u64 + Send + Sync> fmt::Debug for Metering<F> {
+impl<F: Fn(&Operator) -> (u8, u64) + Send + Sync> fmt::Debug for Metering<F> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Metering")
             .field("initial_limit", &self.initial_limit)
@@ -145,13 +156,16 @@ impl<F: Fn(&Operator) -> u64 + Send + Sync> fmt::Debug for Metering<F> {
     }
 }
 
-impl<F: Fn(&Operator) -> u64 + Send + Sync + 'static> ModuleMiddleware for Metering<F> {
+impl<F: Fn(&Operator) -> (u8, u64) + Send + Sync + 'static> ModuleMiddleware for Metering<F> {
     /// Generates a `FunctionMiddleware` for a given function.
     fn generate_function_middleware(&self, _: LocalFunctionIndex) -> Box<dyn FunctionMiddleware> {
         Box::new(FunctionMetering {
             cost_function: self.cost_function.clone(),
             global_indexes: self.global_indexes.lock().unwrap().clone().unwrap(),
             accumulated_cost: 0,
+            data: 0,
+            opcode_counts: 0,
+            poex_global_index: self.poex_global_index.lock().unwrap().clone().unwrap(),
         })
     }
 
@@ -162,6 +176,22 @@ impl<F: Fn(&Operator) -> u64 + Send + Sync + 'static> ModuleMiddleware for Meter
         if global_indexes.is_some() {
             panic!("Metering::transform_module_info: Attempting to use a `Metering` middleware from multiple modules.");
         }
+
+        // Append a global for remaining points and initialize it.
+        let poex_global_index = module_info
+            .globals
+            .push(GlobalType::new(Type::I64, Mutability::Var));
+
+        module_info
+            .global_initializers
+            .push(GlobalInit::I64Const(0));
+
+        module_info.exports.insert(
+            "wasmer_metering_poex".to_string(),
+            ExportIndex::Global(poex_global_index),
+        );
+
+        *self.poex_global_index.lock().unwrap() = Some(poex_global_index);
 
         // Append a global for remaining points and initialize it.
         let remaining_points_global_index = module_info
@@ -198,14 +228,14 @@ impl<F: Fn(&Operator) -> u64 + Send + Sync + 'static> ModuleMiddleware for Meter
     }
 }
 
-impl<F: Fn(&Operator) -> u64 + Send + Sync + 'static> MemoryUsage for Metering<F> {
+impl<F: Fn(&Operator) -> (u8, u64) + Send + Sync + 'static> MemoryUsage for Metering<F> {
     fn size_of_val(&self, tracker: &mut dyn MemoryUsageTracker) -> usize {
         mem::size_of_val(self) + self.global_indexes.size_of_val(tracker)
             - mem::size_of_val(&self.global_indexes)
     }
 }
 
-impl<F: Fn(&Operator) -> u64 + Send + Sync> fmt::Debug for FunctionMetering<F> {
+impl<F: Fn(&Operator) -> (u8, u64) + Send + Sync> fmt::Debug for FunctionMetering<F> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("FunctionMetering")
             .field("cost_function", &"<function>")
@@ -214,7 +244,7 @@ impl<F: Fn(&Operator) -> u64 + Send + Sync> fmt::Debug for FunctionMetering<F> {
     }
 }
 
-impl<F: Fn(&Operator) -> u64 + Send + Sync> FunctionMiddleware for FunctionMetering<F> {
+impl<F: Fn(&Operator) -> (u8, u64) + Send + Sync> FunctionMiddleware for FunctionMetering<F> {
     fn feed<'a>(
         &mut self,
         operator: Operator<'a>,
@@ -223,7 +253,41 @@ impl<F: Fn(&Operator) -> u64 + Send + Sync> FunctionMiddleware for FunctionMeter
         // Get the cost of the current operator, and add it to the accumulator.
         // This needs to be done before the metering logic, to prevent operators like `Call` from escaping metering in some
         // corner cases.
-        self.accumulated_cost += (self.cost_function)(&operator);
+        let cost = (self.cost_function)(&operator);
+        self.accumulated_cost += cost.1;
+        self.data += cost.0 as u64;
+        self.opcode_counts += 1;
+
+        if self.opcode_counts == 8 {
+            state.extend(&[
+                Operator::GlobalGet {
+                    global_index: self.poex_global_index.as_u32(),
+                },
+                Operator::I64Const {
+                    value: self.data as i64,
+                },
+                Operator::I64Xor,
+                Operator::I64Const { value: 1 },
+                Operator::I64Shl,
+                Operator::GlobalGet {
+                    global_index: self.poex_global_index.as_u32(),
+                },
+                Operator::I64Const {
+                    value: self.data as i64,
+                },
+                Operator::I64Xor,
+                Operator::I64Const { value: 63 },
+                Operator::I64ShrU,
+                Operator::I64Or,
+                Operator::GlobalSet {
+                    global_index: self.poex_global_index.as_u32(),
+                },
+            ]);
+            self.opcode_counts = 0;
+            self.data = 0;
+        } else {
+            self.data <<= 8;
+        }
 
         // Possible sources and targets of a branch. Finalize the cost of the previous basic block and perform necessary checks.
         match operator {
@@ -238,6 +302,7 @@ impl<F: Fn(&Operator) -> u64 + Send + Sync> FunctionMiddleware for FunctionMeter
             | Operator::Return // end of function - branch source
             => {
                 if self.accumulated_cost > 0 {
+                    self.data >>= 8;
                     state.extend(&[
                         // if unsigned(globals[remaining_points_index]) < unsigned(self.accumulated_cost) { throw(); }
                         Operator::GlobalGet { global_index: self.global_indexes.remaining_points().as_u32() },
@@ -254,9 +319,24 @@ impl<F: Fn(&Operator) -> u64 + Send + Sync> FunctionMiddleware for FunctionMeter
                         Operator::I64Const { value: self.accumulated_cost as i64 },
                         Operator::I64Sub,
                         Operator::GlobalSet { global_index: self.global_indexes.remaining_points().as_u32() },
+
+                        Operator::GlobalGet { global_index: self.poex_global_index.as_u32() },
+                        Operator::I64Const { value: self.data as i64 },
+                        Operator::I64Xor,
+                        Operator::I64Const { value: 1 },
+                        Operator::I64Shl,
+                        Operator::GlobalGet { global_index: self.poex_global_index.as_u32() },
+                        Operator::I64Const { value: self.data as i64 },
+                        Operator::I64Xor,
+                        Operator::I64Const { value: 63 },
+                        Operator::I64ShrU,
+                        Operator::I64Or,
+                        Operator::GlobalSet { global_index: self.poex_global_index.as_u32() },
                     ]);
 
                     self.accumulated_cost = 0;
+                    self.opcode_counts = 0;
+                    self.data = 0;
                 }
             }
             _ => {}
@@ -363,11 +443,11 @@ mod tests {
     use std::sync::Arc;
     use wasmer::{imports, wat2wasm, CompilerConfig, Cranelift, Module, Store, Universal};
 
-    fn cost_function(operator: &Operator) -> u64 {
+    fn cost_function(operator: &Operator) -> (u8, u64) {
         match operator {
-            Operator::LocalGet { .. } | Operator::I32Const { .. } => 1,
-            Operator::I32Add { .. } => 2,
-            _ => 0,
+            Operator::LocalGet { .. } | Operator::I32Const { .. } => (1, 1),
+            Operator::I32Add { .. } => (2, 2),
+            _ => (0, 0),
         }
     }
 
