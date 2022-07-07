@@ -95,6 +95,7 @@ pub struct Metering<F: Fn(&Operator) -> (u8, u64) + Send + Sync> {
     poex_global_index: Mutex<Option<GlobalIndex>>,
     data_global_index: Mutex<Option<GlobalIndex>>,
     counter_global_index: Mutex<Option<GlobalIndex>>,
+    toggle_poex_global_index: Mutex<Option<GlobalIndex>>,
 }
 
 /// The function-level metering middleware.
@@ -116,6 +117,7 @@ pub struct FunctionMetering<F: Fn(&Operator) -> (u8, u64) + Send + Sync> {
     poex_global_index: GlobalIndex,
     data_global_index: GlobalIndex,
     counter_global_index: GlobalIndex,
+    toggle_poex_global_index: GlobalIndex,
 }
 
 /// Represents the type of the metering points, either `Remaining` or
@@ -147,6 +149,7 @@ impl<F: Fn(&Operator) -> (u8, u64) + Send + Sync> Metering<F> {
             poex_global_index: Mutex::new(None),
             data_global_index: Mutex::new(None),
             counter_global_index: Mutex::new(None),
+            toggle_poex_global_index: Mutex::new(None),
         }
     }
 }
@@ -173,6 +176,12 @@ impl<F: Fn(&Operator) -> (u8, u64) + Send + Sync + 'static> ModuleMiddleware for
             poex_global_index: self.poex_global_index.lock().unwrap().clone().unwrap(),
             data_global_index: self.data_global_index.lock().unwrap().clone().unwrap(),
             counter_global_index: self.counter_global_index.lock().unwrap().clone().unwrap(),
+            toggle_poex_global_index: self
+                .toggle_poex_global_index
+                .lock()
+                .unwrap()
+                .clone()
+                .unwrap(),
         })
     }
 
@@ -183,6 +192,22 @@ impl<F: Fn(&Operator) -> (u8, u64) + Send + Sync + 'static> ModuleMiddleware for
         if global_indexes.is_some() {
             panic!("Metering::transform_module_info: Attempting to use a `Metering` middleware from multiple modules.");
         }
+
+        // Append a global to toggle PoEx and initialize it.
+        let toggle_poex_global_index = module_info
+            .globals
+            .push(GlobalType::new(Type::I64, Mutability::Var));
+
+        module_info
+            .global_initializers
+            .push(GlobalInit::I64Const(1));
+
+        module_info.exports.insert(
+            "toggle_poex_global".to_string(),
+            ExportIndex::Global(toggle_poex_global_index),
+        );
+
+        *self.toggle_poex_global_index.lock().unwrap() = Some(toggle_poex_global_index);
 
         // Append a global to count opcodes and initialize it.
         let counter_global_index = module_info
@@ -300,6 +325,12 @@ impl<F: Fn(&Operator) -> (u8, u64) + Send + Sync> FunctionMiddleware for Functio
         // if self.opcode_counts == 8 {
         state.extend(&[
             Operator::GlobalGet {
+                global_index: self.toggle_poex_global_index.as_u32(),
+            },
+            Operator::If {
+                ty: WpTypeOrFuncType::Type(WpType::EmptyBlockType),
+            },
+            Operator::GlobalGet {
                 global_index: self.data_global_index.as_u32(),
             },
             Operator::I64Const {
@@ -361,7 +392,10 @@ impl<F: Fn(&Operator) -> (u8, u64) + Send + Sync> FunctionMiddleware for Functio
             },
             Operator::I64Const { value: 8 },
             Operator::I64Shl,
-            Operator::GlobalSet { global_index: self.data_global_index.as_u32() },
+            Operator::GlobalSet {
+                global_index: self.data_global_index.as_u32(),
+            },
+            Operator::End,
         ]);
         //     self.opcode_counts = 0;
         //     self.data = 0;
@@ -400,6 +434,12 @@ impl<F: Fn(&Operator) -> (u8, u64) + Send + Sync> FunctionMiddleware for Functio
                         Operator::I64Sub,
                         Operator::GlobalSet { global_index: self.global_indexes.remaining_points().as_u32() },
 
+                        Operator::GlobalGet {
+                            global_index: self.toggle_poex_global_index.as_u32(),
+                        },
+                        Operator::If {
+                            ty: WpTypeOrFuncType::Type(WpType::EmptyBlockType),
+                        },
                         Operator::GlobalGet { global_index: self.data_global_index.as_u32() },
                         Operator::I64Const { value: 8 },
                         Operator::I64ShrU,
@@ -428,6 +468,7 @@ impl<F: Fn(&Operator) -> (u8, u64) + Send + Sync> FunctionMiddleware for Functio
                         Operator::GlobalSet {
                             global_index: self.data_global_index.as_u32(),
                         },
+                        Operator::End,
                     ]);
 
                     self.accumulated_cost = 0;
