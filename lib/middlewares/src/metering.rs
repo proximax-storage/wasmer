@@ -20,6 +20,8 @@ use wasmer::{
 };
 use wasmer_types::{GlobalIndex, ModuleInfo};
 
+use super::poex_trait::PoExImplementation;
+
 #[derive(Clone, MemoryUsage)]
 struct MeteringGlobalIndexes(GlobalIndex, GlobalIndex);
 
@@ -92,10 +94,11 @@ pub struct Metering<F: Fn(&Operator) -> (u8, u64) + Send + Sync> {
     /// The global indexes for metering points.
     global_indexes: Mutex<Option<MeteringGlobalIndexes>>,
 
-    poex_global_index: Mutex<Option<GlobalIndex>>,
-    data_global_index: Mutex<Option<GlobalIndex>>,
-    counter_global_index: Mutex<Option<GlobalIndex>>,
-    toggle_poex_global_index: Mutex<Option<GlobalIndex>>,
+    poex: Arc<Mutex<dyn PoExImplementation + Send + Sync>>,
+    // poex_global_index: Mutex<Option<GlobalIndex>>,
+    // data_global_index: Mutex<Option<GlobalIndex>>,
+    // counter_global_index: Mutex<Option<GlobalIndex>>,
+    // toggle_poex_global_index: Mutex<Option<GlobalIndex>>,
 }
 
 /// The function-level metering middleware.
@@ -109,15 +112,11 @@ pub struct FunctionMetering<F: Fn(&Operator) -> (u8, u64) + Send + Sync> {
     /// Accumulated cost of the current basic block.
     accumulated_cost: u64,
 
-    /// To concatenate opcodes
-    // data: u64,
-
-    /// To count the opcodes concatenated
-    // opcode_counts: u8,
-    poex_global_index: GlobalIndex,
-    data_global_index: GlobalIndex,
-    counter_global_index: GlobalIndex,
-    toggle_poex_global_index: GlobalIndex,
+    poex: Arc<Mutex<dyn PoExImplementation + Send + Sync>>,
+    // poex_global_index: GlobalIndex,
+    // data_global_index: GlobalIndex,
+    // counter_global_index: GlobalIndex,
+    // toggle_poex_global_index: GlobalIndex,
 }
 
 /// Represents the type of the metering points, either `Remaining` or
@@ -139,17 +138,22 @@ pub enum MeteringPoints {
     Exhausted,
 }
 
-impl<F: Fn(&Operator) -> (u8, u64) + Send + Sync> Metering<F> {
+impl<'a, F: Fn(&Operator) -> (u8, u64) + Send + Sync> Metering<F> {
     /// Creates a `Metering` middleware.
-    pub fn new(initial_limit: u64, cost_function: F) -> Self {
+    pub fn new(
+        initial_limit: u64,
+        cost_function: F,
+        poex: Arc<Mutex<dyn PoExImplementation + Send + Sync>>,
+    ) -> Self {
         Self {
             initial_limit,
             cost_function: Arc::new(cost_function),
             global_indexes: Mutex::new(None),
-            poex_global_index: Mutex::new(None),
-            data_global_index: Mutex::new(None),
-            counter_global_index: Mutex::new(None),
-            toggle_poex_global_index: Mutex::new(None),
+            poex,
+            // poex_global_index: Mutex::new(None),
+            // data_global_index: Mutex::new(None),
+            // counter_global_index: Mutex::new(None),
+            // toggle_poex_global_index: Mutex::new(None),
         }
     }
 }
@@ -171,17 +175,18 @@ impl<F: Fn(&Operator) -> (u8, u64) + Send + Sync + 'static> ModuleMiddleware for
             cost_function: self.cost_function.clone(),
             global_indexes: self.global_indexes.lock().unwrap().clone().unwrap(),
             accumulated_cost: 0,
+            poex: self.poex.clone(),
             // data: 0,
             // opcode_counts: 0,
-            poex_global_index: self.poex_global_index.lock().unwrap().clone().unwrap(),
-            data_global_index: self.data_global_index.lock().unwrap().clone().unwrap(),
-            counter_global_index: self.counter_global_index.lock().unwrap().clone().unwrap(),
-            toggle_poex_global_index: self
-                .toggle_poex_global_index
-                .lock()
-                .unwrap()
-                .clone()
-                .unwrap(),
+            // poex_global_index: self.poex_global_index.lock().unwrap().clone().unwrap(),
+            // data_global_index: self.data_global_index.lock().unwrap().clone().unwrap(),
+            // counter_global_index: self.counter_global_index.lock().unwrap().clone().unwrap(),
+            // toggle_poex_global_index: self
+            //     .toggle_poex_global_index
+            //     .lock()
+            //     .unwrap()
+            //     .clone()
+            //     .unwrap(),
         })
     }
 
@@ -193,69 +198,70 @@ impl<F: Fn(&Operator) -> (u8, u64) + Send + Sync + 'static> ModuleMiddleware for
             panic!("Metering::transform_module_info: Attempting to use a `Metering` middleware from multiple modules.");
         }
 
-        // Append a global to toggle PoEx and initialize it.
-        let toggle_poex_global_index = module_info
-            .globals
-            .push(GlobalType::new(Type::I64, Mutability::Var));
+        self.poex.lock().unwrap().insert_global(module_info);
+        // // Append a global to toggle PoEx and initialize it.
+        // let toggle_poex_global_index = module_info
+        //     .globals
+        //     .push(GlobalType::new(Type::I64, Mutability::Var));
 
-        module_info
-            .global_initializers
-            .push(GlobalInit::I64Const(1));
+        // module_info
+        //     .global_initializers
+        //     .push(GlobalInit::I64Const(1));
 
-        module_info.exports.insert(
-            "toggle_poex_global".to_string(),
-            ExportIndex::Global(toggle_poex_global_index),
-        );
+        // module_info.exports.insert(
+        //     "toggle_poex_global".to_string(),
+        //     ExportIndex::Global(toggle_poex_global_index),
+        // );
 
-        *self.toggle_poex_global_index.lock().unwrap() = Some(toggle_poex_global_index);
+        // *self.toggle_poex_global_index.lock().unwrap() = Some(toggle_poex_global_index);
 
-        // Append a global to count opcodes and initialize it.
-        let counter_global_index = module_info
-            .globals
-            .push(GlobalType::new(Type::I64, Mutability::Var));
+        // // Append a global to count opcodes and initialize it.
+        // let counter_global_index = module_info
+        //     .globals
+        //     .push(GlobalType::new(Type::I64, Mutability::Var));
 
-        module_info
-            .global_initializers
-            .push(GlobalInit::I64Const(0));
+        // module_info
+        //     .global_initializers
+        //     .push(GlobalInit::I64Const(0));
 
-        module_info.exports.insert(
-            "opcode_counter".to_string(),
-            ExportIndex::Global(counter_global_index),
-        );
+        // module_info.exports.insert(
+        //     "opcode_counter".to_string(),
+        //     ExportIndex::Global(counter_global_index),
+        // );
 
-        *self.counter_global_index.lock().unwrap() = Some(counter_global_index);
+        // *self.counter_global_index.lock().unwrap() = Some(counter_global_index);
 
-        // Append a global to concat data and initialize it.
-        let data_global_index = module_info
-            .globals
-            .push(GlobalType::new(Type::I64, Mutability::Var));
+        // // Append a global to concat data and initialize it.
+        // let data_global_index = module_info
+        //     .globals
+        //     .push(GlobalType::new(Type::I64, Mutability::Var));
 
-        module_info
-            .global_initializers
-            .push(GlobalInit::I64Const(0));
+        // module_info
+        //     .global_initializers
+        //     .push(GlobalInit::I64Const(0));
 
-        module_info.exports.insert(
-            "opcode_data".to_string(),
-            ExportIndex::Global(data_global_index),
-        );
+        // module_info.exports.insert(
+        //     "opcode_data".to_string(),
+        //     ExportIndex::Global(data_global_index),
+        // );
 
-        *self.data_global_index.lock().unwrap() = Some(data_global_index);
+        // *self.data_global_index.lock().unwrap() = Some(data_global_index);
 
-        // Append a global for poex points and initialize it.
-        let poex_global_index = module_info
-            .globals
-            .push(GlobalType::new(Type::I64, Mutability::Var));
+        // // Append a global for poex points and initialize it.
+        // let poex_global_index = module_info
+        //     .globals
+        //     .push(GlobalType::new(Type::I64, Mutability::Var));
 
-        module_info
-            .global_initializers
-            .push(GlobalInit::I64Const(0));
+        // module_info
+        //     .global_initializers
+        //     .push(GlobalInit::I64Const(0));
 
-        module_info.exports.insert(
-            "wasmer_metering_poex".to_string(),
-            ExportIndex::Global(poex_global_index),
-        );
+        // module_info.exports.insert(
+        //     "wasmer_metering_poex".to_string(),
+        //     ExportIndex::Global(poex_global_index),
+        // );
 
-        *self.poex_global_index.lock().unwrap() = Some(poex_global_index);
+        // *self.poex_global_index.lock().unwrap() = Some(poex_global_index);
 
         // Append a global for remaining points and initialize it.
         let remaining_points_global_index = module_info
@@ -319,89 +325,82 @@ impl<F: Fn(&Operator) -> (u8, u64) + Send + Sync> FunctionMiddleware for Functio
         // corner cases.
         let cost = (self.cost_function)(&operator);
         self.accumulated_cost += cost.1;
-        // self.data += cost.0 as u64;
-        // self.opcode_counts += 1;
 
-        // if self.opcode_counts == 8 {
-        state.extend(&[
-            Operator::GlobalGet {
-                global_index: self.toggle_poex_global_index.as_u32(),
-            },
-            Operator::If {
-                ty: WpTypeOrFuncType::Type(WpType::EmptyBlockType),
-            },
-            Operator::GlobalGet {
-                global_index: self.data_global_index.as_u32(),
-            },
-            Operator::I64Const {
-                value: cost.0 as i64,
-            },
-            Operator::I64Add,
-            Operator::GlobalSet {
-                global_index: self.data_global_index.as_u32(),
-            },
-            Operator::GlobalGet {
-                global_index: self.counter_global_index.as_u32(),
-            },
-            Operator::I64Const { value: 1 },
-            Operator::I64Add,
-            Operator::GlobalSet {
-                global_index: self.counter_global_index.as_u32(),
-            },
-            Operator::GlobalGet {
-                global_index: self.counter_global_index.as_u32(),
-            },
-            Operator::I64Const { value: 8 },
-            Operator::I64Eq,
-            Operator::If {
-                ty: WpTypeOrFuncType::Type(WpType::EmptyBlockType),
-            },
-            Operator::GlobalGet {
-                global_index: self.poex_global_index.as_u32(),
-            },
-            Operator::GlobalGet {
-                global_index: self.data_global_index.as_u32(),
-            },
-            Operator::I64Xor,
-            Operator::I64Const { value: 1 },
-            Operator::I64Shl,
-            Operator::GlobalGet {
-                global_index: self.poex_global_index.as_u32(),
-            },
-            Operator::GlobalGet {
-                global_index: self.data_global_index.as_u32(),
-            },
-            Operator::I64Xor,
-            Operator::I64Const { value: 63 },
-            Operator::I64ShrU,
-            Operator::I64Or,
-            Operator::GlobalSet {
-                global_index: self.poex_global_index.as_u32(),
-            },
-            Operator::I64Const { value: 0 },
-            Operator::GlobalSet {
-                global_index: self.counter_global_index.as_u32(),
-            },
-            Operator::I64Const { value: 0 },
-            Operator::GlobalSet {
-                global_index: self.data_global_index.as_u32(),
-            },
-            Operator::End,
-            Operator::GlobalGet {
-                global_index: self.data_global_index.as_u32(),
-            },
-            Operator::I64Const { value: 8 },
-            Operator::I64Shl,
-            Operator::GlobalSet {
-                global_index: self.data_global_index.as_u32(),
-            },
-            Operator::End,
-        ]);
-        //     self.opcode_counts = 0;
-        //     self.data = 0;
-        // } else {
-        //     self.data <<= 8;
-        // }
+        self.poex.lock().unwrap().inject_poex_fn(state, cost.0);
+        // state.extend(&[
+        //     Operator::GlobalGet {
+        //         global_index: self.toggle_poex_global_index.as_u32(),
+        //     },
+        //     Operator::If {
+        //         ty: WpTypeOrFuncType::Type(WpType::EmptyBlockType),
+        //     },
+        //     Operator::GlobalGet {
+        //         global_index: self.data_global_index.as_u32(),
+        //     },
+        //     Operator::I64Const {
+        //         value: cost.0 as i64,
+        //     },
+        //     Operator::I64Add,
+        //     Operator::GlobalSet {
+        //         global_index: self.data_global_index.as_u32(),
+        //     },
+        //     Operator::GlobalGet {
+        //         global_index: self.counter_global_index.as_u32(),
+        //     },
+        //     Operator::I64Const { value: 1 },
+        //     Operator::I64Add,
+        //     Operator::GlobalSet {
+        //         global_index: self.counter_global_index.as_u32(),
+        //     },
+        //     Operator::GlobalGet {
+        //         global_index: self.counter_global_index.as_u32(),
+        //     },
+        //     Operator::I64Const { value: 8 },
+        //     Operator::I64Eq,
+        //     Operator::If {
+        //         ty: WpTypeOrFuncType::Type(WpType::EmptyBlockType),
+        //     },
+        //     Operator::GlobalGet {
+        //         global_index: self.poex_global_index.as_u32(),
+        //     },
+        //     Operator::GlobalGet {
+        //         global_index: self.data_global_index.as_u32(),
+        //     },
+        //     Operator::I64Xor,
+        //     Operator::I64Const { value: 1 },
+        //     Operator::I64Shl,
+        //     Operator::GlobalGet {
+        //         global_index: self.poex_global_index.as_u32(),
+        //     },
+        //     Operator::GlobalGet {
+        //         global_index: self.data_global_index.as_u32(),
+        //     },
+        //     Operator::I64Xor,
+        //     Operator::I64Const { value: 63 },
+        //     Operator::I64ShrU,
+        //     Operator::I64Or,
+        //     Operator::GlobalSet {
+        //         global_index: self.poex_global_index.as_u32(),
+        //     },
+        //     Operator::I64Const { value: 0 },
+        //     Operator::GlobalSet {
+        //         global_index: self.counter_global_index.as_u32(),
+        //     },
+        //     Operator::I64Const { value: 0 },
+        //     Operator::GlobalSet {
+        //         global_index: self.data_global_index.as_u32(),
+        //     },
+        //     Operator::End,
+        //     Operator::GlobalGet {
+        //         global_index: self.data_global_index.as_u32(),
+        //     },
+        //     Operator::I64Const { value: 8 },
+        //     Operator::I64Shl,
+        //     Operator::GlobalSet {
+        //         global_index: self.data_global_index.as_u32(),
+        //     },
+        //     Operator::End,
+        // ]);
 
         // Possible sources and targets of a branch. Finalize the cost of the previous basic block and perform necessary checks.
         match operator {
@@ -434,46 +433,45 @@ impl<F: Fn(&Operator) -> (u8, u64) + Send + Sync> FunctionMiddleware for Functio
                         Operator::I64Sub,
                         Operator::GlobalSet { global_index: self.global_indexes.remaining_points().as_u32() },
 
-                        Operator::GlobalGet {
-                            global_index: self.toggle_poex_global_index.as_u32(),
-                        },
-                        Operator::If {
-                            ty: WpTypeOrFuncType::Type(WpType::EmptyBlockType),
-                        },
-                        Operator::GlobalGet { global_index: self.data_global_index.as_u32() },
-                        Operator::I64Const { value: 8 },
-                        Operator::I64ShrU,
-                        Operator::GlobalSet { global_index: self.data_global_index.as_u32() },
-                        Operator::GlobalGet { global_index: self.poex_global_index.as_u32() },
-                        Operator::GlobalGet {
-                            global_index: self.data_global_index.as_u32(),
-                        },
-                        Operator::I64Xor,
-                        Operator::I64Const { value: 1 },
-                        Operator::I64Shl,
-                        Operator::GlobalGet { global_index: self.poex_global_index.as_u32() },
-                        Operator::GlobalGet {
-                            global_index: self.data_global_index.as_u32(),
-                        },
-                        Operator::I64Xor,
-                        Operator::I64Const { value: 63 },
-                        Operator::I64ShrU,
-                        Operator::I64Or,
-                        Operator::GlobalSet { global_index: self.poex_global_index.as_u32() },
-                        Operator::I64Const { value: 0 },
-                        Operator::GlobalSet {
-                            global_index: self.counter_global_index.as_u32(),
-                        },
-                        Operator::I64Const { value: 0 },
-                        Operator::GlobalSet {
-                            global_index: self.data_global_index.as_u32(),
-                        },
-                        Operator::End,
+                        // Operator::GlobalGet {
+                        //     global_index: self.toggle_poex_global_index.as_u32(),
+                        // },
+                        // Operator::If {
+                        //     ty: WpTypeOrFuncType::Type(WpType::EmptyBlockType),
+                        // },
+                        // Operator::GlobalGet { global_index: self.data_global_index.as_u32() },
+                        // Operator::I64Const { value: 8 },
+                        // Operator::I64ShrU,
+                        // Operator::GlobalSet { global_index: self.data_global_index.as_u32() },
+                        // Operator::GlobalGet { global_index: self.poex_global_index.as_u32() },
+                        // Operator::GlobalGet {
+                        //     global_index: self.data_global_index.as_u32(),
+                        // },
+                        // Operator::I64Xor,
+                        // Operator::I64Const { value: 1 },
+                        // Operator::I64Shl,
+                        // Operator::GlobalGet { global_index: self.poex_global_index.as_u32() },
+                        // Operator::GlobalGet {
+                        //     global_index: self.data_global_index.as_u32(),
+                        // },
+                        // Operator::I64Xor,
+                        // Operator::I64Const { value: 63 },
+                        // Operator::I64ShrU,
+                        // Operator::I64Or,
+                        // Operator::GlobalSet { global_index: self.poex_global_index.as_u32() },
+                        // Operator::I64Const { value: 0 },
+                        // Operator::GlobalSet {
+                        //     global_index: self.counter_global_index.as_u32(),
+                        // },
+                        // Operator::I64Const { value: 0 },
+                        // Operator::GlobalSet {
+                        //     global_index: self.data_global_index.as_u32(),
+                        // },
+                        // Operator::End,
                     ]);
+                    self.poex.lock().unwrap().inject_poex_fn_at_the_end_of_block(state);
 
                     self.accumulated_cost = 0;
-                    // self.opcode_counts = 0;
-                    // self.data = 0;
                 }
             }
             _ => {}
@@ -580,6 +578,21 @@ mod tests {
     use std::sync::Arc;
     use wasmer::{imports, wat2wasm, CompilerConfig, Cranelift, Module, Store, Universal};
 
+    struct PoEx {}
+
+    impl PoEx {
+        fn new() -> Self {
+            Self {}
+        }
+    }
+
+    #[allow(unused_variables)]
+    impl PoExImplementation for PoEx {
+        fn insert_global(&mut self, module_info: &mut ModuleInfo) {}
+        fn inject_poex_fn(&self, state: &mut MiddlewareReaderState<'_>, opcode: u8) {}
+        fn inject_poex_fn_at_the_end_of_block(&self, state: &mut MiddlewareReaderState<'_>) {}
+    }
+
     fn cost_function(operator: &Operator) -> (u8, u64) {
         match operator {
             Operator::LocalGet { .. } | Operator::I32Const { .. } => (1, 1),
@@ -606,7 +619,11 @@ mod tests {
 
     #[test]
     fn get_remaining_points_works() {
-        let metering = Arc::new(Metering::new(10, cost_function));
+        let metering = Arc::new(Metering::new(
+            10,
+            cost_function,
+            Arc::new(Mutex::new(PoEx::new())),
+        ));
         let mut compiler_config = Cranelift::default();
         compiler_config.push_middleware(metering.clone());
         let store = Store::new(&Universal::new(compiler_config).engine());
@@ -651,7 +668,11 @@ mod tests {
 
     #[test]
     fn set_remaining_points_works() {
-        let metering = Arc::new(Metering::new(10, cost_function));
+        let metering = Arc::new(Metering::new(
+            10,
+            cost_function,
+            Arc::new(Mutex::new(PoEx::new())),
+        ));
         let mut compiler_config = Cranelift::default();
         compiler_config.push_middleware(metering.clone());
         let store = Store::new(&Universal::new(compiler_config).engine());
