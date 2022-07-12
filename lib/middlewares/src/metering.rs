@@ -20,7 +20,7 @@ use wasmer::{
 };
 use wasmer_types::{GlobalIndex, ModuleInfo};
 
-use super::poex_trait::PoExImplementation;
+use super::poex_trait::PoEx;
 
 #[derive(Clone, MemoryUsage)]
 struct MeteringGlobalIndexes(GlobalIndex, GlobalIndex);
@@ -94,7 +94,7 @@ pub struct Metering<F: Fn(&Operator) -> (u8, u64) + Send + Sync> {
     /// The global indexes for metering points.
     global_indexes: Mutex<Option<MeteringGlobalIndexes>>,
 
-    poex: Arc<Mutex<dyn PoExImplementation + Send + Sync>>,
+    poex: Arc<Mutex<dyn PoEx + Send + Sync>>,
     // poex_global_index: Mutex<Option<GlobalIndex>>,
     // data_global_index: Mutex<Option<GlobalIndex>>,
     // counter_global_index: Mutex<Option<GlobalIndex>>,
@@ -112,7 +112,7 @@ pub struct FunctionMetering<F: Fn(&Operator) -> (u8, u64) + Send + Sync> {
     /// Accumulated cost of the current basic block.
     accumulated_cost: u64,
 
-    poex: Arc<Mutex<dyn PoExImplementation + Send + Sync>>,
+    poex: Arc<Mutex<dyn PoEx + Send + Sync>>,
     // poex_global_index: GlobalIndex,
     // data_global_index: GlobalIndex,
     // counter_global_index: GlobalIndex,
@@ -143,7 +143,7 @@ impl<'a, F: Fn(&Operator) -> (u8, u64) + Send + Sync> Metering<F> {
     pub fn new(
         initial_limit: u64,
         cost_function: F,
-        poex: Arc<Mutex<dyn PoExImplementation + Send + Sync>>,
+        poex: Arc<Mutex<dyn PoEx + Send + Sync>>,
     ) -> Self {
         Self {
             initial_limit,
@@ -578,16 +578,16 @@ mod tests {
     use std::sync::Arc;
     use wasmer::{imports, wat2wasm, CompilerConfig, Cranelift, Module, Store, Universal};
 
-    struct PoEx {}
+    struct PoExMock {}
 
-    impl PoEx {
+    impl PoExMock {
         fn new() -> Self {
             Self {}
         }
     }
 
     #[allow(unused_variables)]
-    impl PoExImplementation for PoEx {
+    impl PoEx for PoExMock {
         fn insert_global(&mut self, module_info: &mut ModuleInfo) {}
         fn inject_poex_fn(&self, state: &mut MiddlewareReaderState<'_>, opcode: u8) {}
         fn inject_poex_fn_at_the_end_of_block(&self, state: &mut MiddlewareReaderState<'_>) {}
@@ -622,7 +622,7 @@ mod tests {
         let metering = Arc::new(Metering::new(
             10,
             cost_function,
-            Arc::new(Mutex::new(PoEx::new())),
+            Arc::new(Mutex::new(PoExMock::new())),
         ));
         let mut compiler_config = Cranelift::default();
         compiler_config.push_middleware(metering.clone());
@@ -671,7 +671,7 @@ mod tests {
         let metering = Arc::new(Metering::new(
             10,
             cost_function,
-            Arc::new(Mutex::new(PoEx::new())),
+            Arc::new(Mutex::new(PoExMock::new())),
         ));
         let mut compiler_config = Cranelift::default();
         compiler_config.push_middleware(metering.clone());
