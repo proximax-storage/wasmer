@@ -15,6 +15,7 @@ wasmer = { path = "../api", version = "=2.2.1", default-features = false, featur
 wasmer-types = { path = "../types", version = "=2.2.1" }
 wasmer-vm = { path = "../vm", version = "=2.2.1" }
 loupe = "0.1"
+dyn-clone = "1.0.6"
 
 [dev-dependencies]
 wasmer = { path = "../api", version = "=2.2.1", features = ["compiler"] }

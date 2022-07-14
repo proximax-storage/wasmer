@@ -94,7 +94,7 @@ pub struct Metering<F: Fn(&Operator) -> (u8, u64) + Send + Sync> {
     /// The global indexes for metering points.
     global_indexes: Mutex<Option<MeteringGlobalIndexes>>,
 
-    poex: Arc<Mutex<dyn PoEx + Send + Sync>>,
+    poex: Arc<Mutex<Box<dyn PoEx + Send + Sync>>>,
     // poex_global_index: Mutex<Option<GlobalIndex>>,
     // data_global_index: Mutex<Option<GlobalIndex>>,
     // counter_global_index: Mutex<Option<GlobalIndex>>,
@@ -112,7 +112,7 @@ pub struct FunctionMetering<F: Fn(&Operator) -> (u8, u64) + Send + Sync> {
     /// Accumulated cost of the current basic block.
     accumulated_cost: u64,
 
-    poex: Arc<Mutex<dyn PoEx + Send + Sync>>,
+    poex: Arc<Mutex<Box<dyn PoEx + Send + Sync>>>,
     // poex_global_index: GlobalIndex,
     // data_global_index: GlobalIndex,
     // counter_global_index: GlobalIndex,
@@ -143,7 +143,7 @@ impl<'a, F: Fn(&Operator) -> (u8, u64) + Send + Sync> Metering<F> {
     pub fn new(
         initial_limit: u64,
         cost_function: F,
-        poex: Arc<Mutex<dyn PoEx + Send + Sync>>,
+        poex: Arc<Mutex<Box<dyn PoEx + Send + Sync>>>,
     ) -> Self {
         Self {
             initial_limit,
@@ -175,7 +175,9 @@ impl<F: Fn(&Operator) -> (u8, u64) + Send + Sync + 'static> ModuleMiddleware for
             cost_function: self.cost_function.clone(),
             global_indexes: self.global_indexes.lock().unwrap().clone().unwrap(),
             accumulated_cost: 0,
-            poex: self.poex.clone(),
+            poex: Arc::new(Mutex::new(dyn_clone::clone_box(
+                &**self.poex.lock().unwrap(),
+            ))),
             // data: 0,
             // opcode_counts: 0,
             // poex_global_index: self.poex_global_index.lock().unwrap().clone().unwrap(),
@@ -326,7 +328,8 @@ impl<F: Fn(&Operator) -> (u8, u64) + Send + Sync> FunctionMiddleware for Functio
         let cost = (self.cost_function)(&operator);
         self.accumulated_cost += cost.1;
 
-        self.poex.lock().unwrap().inject_poex_fn(state, cost.0);
+        self.poex.lock().unwrap().add_opcode(cost.0);
+        // self.poex.lock().unwrap().inject_poex_fn(state, cost.0);
         // state.extend(&[
         //     Operator::GlobalGet {
         //         global_index: self.toggle_poex_global_index.as_u32(),
@@ -578,6 +581,7 @@ mod tests {
     use std::sync::Arc;
     use wasmer::{imports, wat2wasm, CompilerConfig, Cranelift, Module, Store, Universal};
 
+    #[derive(Clone)]
     struct PoExMock {}
 
     impl PoExMock {
@@ -588,9 +592,10 @@ mod tests {
 
     #[allow(unused_variables)]
     impl PoEx for PoExMock {
+        fn add_opcode(&mut self, opcode: u8) {}
         fn insert_global(&mut self, module_info: &mut ModuleInfo) {}
         fn inject_poex_fn(&self, state: &mut MiddlewareReaderState<'_>, opcode: u8) {}
-        fn inject_poex_fn_at_the_end_of_block(&self, state: &mut MiddlewareReaderState<'_>) {}
+        fn inject_poex_fn_at_the_end_of_block(&mut self, state: &mut MiddlewareReaderState<'_>) {}
     }
 
     fn cost_function(operator: &Operator) -> (u8, u64) {
@@ -622,7 +627,7 @@ mod tests {
         let metering = Arc::new(Metering::new(
             10,
             cost_function,
-            Arc::new(Mutex::new(PoExMock::new())),
+            Arc::new(Mutex::new(Box::new(PoExMock::new()))),
         ));
         let mut compiler_config = Cranelift::default();
         compiler_config.push_middleware(metering.clone());
@@ -671,7 +676,7 @@ mod tests {
         let metering = Arc::new(Metering::new(
             10,
             cost_function,
-            Arc::new(Mutex::new(PoExMock::new())),
+            Arc::new(Mutex::new(Box::new(PoExMock::new()))),
         ));
         let mut compiler_config = Cranelift::default();
         compiler_config.push_middleware(metering.clone());

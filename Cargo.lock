@@ -739,6 +739,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9ea835d29036a4087793836fa931b08837ad5e957da9e23886b29586fb9b6650"
 
 [[package]]
+name = "dyn-clone"
+version = "1.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "140206b78fb2bc3edbcfc9b5ccbd0b30699cfe8d348b8b31b330e47df5291a5a"
+
+[[package]]
 name = "dynasm"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3138,6 +3144,7 @@ version = "2.2.1"
 name = "wasmer-middlewares"
 version = "2.2.1"
 dependencies = [
+ "dyn-clone",
  "loupe",
  "wasmer",
  "wasmer-types",
