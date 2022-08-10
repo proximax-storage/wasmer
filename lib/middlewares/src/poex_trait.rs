@@ -8,5 +8,5 @@ pub trait PoEx {
 
 pub trait PoExBuilder {
     fn insert_global(&mut self, module_info: &mut ModuleInfo);
-    fn get_poex(&self) -> Box<dyn PoEx + Sync + Send>;
+    fn get_poex(&self) -> Box<dyn PoEx>;
 }

@@ -112,7 +112,7 @@ pub struct FunctionMetering<F: Fn(&Operator) -> (u8, u64) + Send + Sync> {
     accumulated_cost: u64,
 
     /// Trait to calculate proof of execution hash
-    poex: Box<dyn PoEx + Send + Sync>,
+    poex: Box<dyn PoEx>,
 }
 
 /// Represents the type of the metering points, either `Remaining` or
@@ -404,7 +404,7 @@ mod tests {
             todo!()
         }
 
-        fn get_poex(&self) -> Box<dyn PoEx + Sync + Send> {
+        fn get_poex(&self) -> Box<dyn PoEx> {
             todo!()
         }
     }
