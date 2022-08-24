@@ -407,6 +407,10 @@ mod tests {
         fn get_poex(&self) -> Box<dyn PoEx> {
             todo!()
         }
+
+        fn init_with_instance(&mut self, instance: &Instance) -> Result<(), std::io::Error> {
+            todo!()
+        }
     }
 
     #[allow(unused_variables)]

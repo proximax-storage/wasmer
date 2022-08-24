@@ -1,4 +1,4 @@
-use wasmer::MiddlewareReaderState;
+use wasmer::{MiddlewareReaderState, Instance};
 use wasmer_types::ModuleInfo;
 
 pub trait PoEx {
@@ -7,6 +7,7 @@ pub trait PoEx {
 }
 
 pub trait PoExBuilder {
+    fn init_with_instance(&mut self, instance: &Instance) -> Result<(), std::io::Error>;
     fn insert_global(&mut self, module_info: &mut ModuleInfo);
     fn get_poex(&self) -> Box<dyn PoEx>;
 }
