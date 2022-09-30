@@ -12,6 +12,7 @@ use loupe::{MemoryUsage, MemoryUsageTracker};
 use std::convert::TryInto;
 use std::fmt;
 use std::mem;
+use std::sync::Weak;
 use std::sync::{Arc, Mutex};
 use wasmer::wasmparser::{Operator, Type as WpType, TypeOrFuncType as WpTypeOrFuncType};
 use wasmer::{
@@ -97,7 +98,7 @@ pub struct Metering<F: Fn(&Operator) -> (u8, u64) + Send + Sync> {
     global_indexes: Mutex<Option<MeteringGlobalIndexes>>,
 
     /// Trait to calculate proof of execution hash
-    poex_builder: Arc<Mutex<dyn PoExBuilder + Send + Sync>>,
+    poex_builder: Weak<Mutex<dyn PoExBuilder + Send + Sync>>,
 }
 
 /// The function-level metering middleware.
@@ -139,7 +140,7 @@ impl<'a, F: Fn(&Operator) -> (u8, u64) + Send + Sync> Metering<F> {
     pub fn new(
         initial_limit: u64,
         cost_function: F,
-        poex_builder: Arc<Mutex<dyn PoExBuilder + Send + Sync>>,
+        poex_builder: Weak<Mutex<dyn PoExBuilder + Send + Sync>>,
     ) -> Self {
         Self {
             initial_limit,
@@ -163,7 +164,7 @@ impl<F: Fn(&Operator) -> (u8, u64) + Send + Sync> fmt::Debug for Metering<F> {
 impl<F: Fn(&Operator) -> (u8, u64) + Send + Sync + 'static> ModuleMiddleware for Metering<F> {
     /// Generates a `FunctionMiddleware` for a given function.
     fn generate_function_middleware(&self, _: LocalFunctionIndex) -> Box<dyn FunctionMiddleware> {
-        let poex = self.poex_builder.lock().unwrap().get_poex();
+        let poex = self.poex_builder.upgrade().unwrap().lock().unwrap().get_poex();
         Box::new(FunctionMetering {
             cost_function: self.cost_function.clone(),
             global_indexes: self.global_indexes.lock().unwrap().clone().unwrap(),
@@ -180,7 +181,7 @@ impl<F: Fn(&Operator) -> (u8, u64) + Send + Sync + 'static> ModuleMiddleware for
             panic!("Metering::transform_module_info: Attempting to use a `Metering` middleware from multiple modules.");
         }
 
-        self.poex_builder.lock().unwrap().insert_global(module_info);
+        self.poex_builder.upgrade().unwrap().lock().unwrap().insert_global(module_info);
 
         // Append a global for remaining points and initialize it.
         let remaining_points_global_index = module_info
@@ -382,6 +383,8 @@ pub fn set_remaining_points(instance: &Instance, points: u64) {
 
 #[cfg(test)]
 mod tests {
+    use crate::poex_trait;
+
     use super::*;
 
     use std::sync::Arc;
@@ -448,7 +451,7 @@ mod tests {
     fn get_remaining_points_works() {
         let poex_builder_mock: Arc<Mutex<dyn PoExBuilder + Send + Sync>> =
             Arc::new(Mutex::new(PoExBuilderMock::new()));
-        let metering = Arc::new(Metering::new(10, cost_function, poex_builder_mock));
+        let metering = Arc::new(Metering::new(10, cost_function, Arc::downgrade(&poex_builder_mock)));
         let mut compiler_config = Cranelift::default();
         compiler_config.push_middleware(metering.clone());
         let store = Store::new(&Universal::new(compiler_config).engine());
@@ -493,10 +496,11 @@ mod tests {
 
     #[test]
     fn set_remaining_points_works() {
+        let poex: Arc<std::sync::Mutex<(dyn poex_trait::PoExBuilder + Send + Sync + 'static)>> = Arc::new(Mutex::new(PoExBuilderMock::new()));
         let metering = Arc::new(Metering::new(
             10,
             cost_function,
-            Arc::new(Mutex::new(PoExBuilderMock::new())),
+            Arc::downgrade(&poex),
         ));
         let mut compiler_config = Cranelift::default();
         compiler_config.push_middleware(metering.clone());
